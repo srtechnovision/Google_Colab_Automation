@@ -1,0 +1,35 @@
+name: Weekly Downloader
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run downloader
+        run: python downloader.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-download-${{ github.run_number }}
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
