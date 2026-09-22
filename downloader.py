@@ -12,8 +12,15 @@ Generic, multi-site file downloader with "only download new files" behaviour.
   offered, skips anything already present (either recorded in the manifest
   OR already sitting in the destination folder with the same filename), and
   downloads only what's new.
-- Designed to be triggered on a schedule (cron / Task Scheduler) once a week,
-  see README.md for setup.
+- Designed to be triggered on a schedule (cron / Task Scheduler / Colab
+  scheduled runs) once a week, see README.md for setup.
+
+Google Colab:
+    When this script (and config.json) live in a Google Drive folder and are
+    run inside Colab, it auto-mounts Drive and stores downloads/manifest/log
+    under config["drive_root"] instead of a local folder, so everything
+    persists across Colab sessions. Outside Colab it behaves exactly as
+    before (paths resolve relative to the current working directory).
 
 Usage:
     python3 downloader.py                # run all enabled sources
@@ -47,6 +54,68 @@ BROWSER_HEADERS = {
 }
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
+
+
+# --------------------------------------------------------------------------- #
+# Google Colab / Drive helpers
+# --------------------------------------------------------------------------- #
+
+def in_colab() -> bool:
+    """True when running inside a Google Colab runtime."""
+    try:
+        import google.colab  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def mount_drive_if_colab() -> None:
+    """
+    If running in Colab, mount Google Drive at /content/drive (no-op if it's
+    already mounted). Outside Colab this does nothing, so the script still
+    runs unmodified on a normal machine.
+    """
+    if not in_colab():
+        return
+    drive_mountpoint = Path("/content/drive")
+    if (drive_mountpoint / "MyDrive").exists():
+        return  # already mounted
+    from google.colab import drive  # type: ignore
+    drive.mount(str(drive_mountpoint))
+
+
+def resolve_drive_path(config: dict, key: str, default: str) -> Path:
+    """
+    Resolve a path from config.
+
+    - In Google Colab, relative paths are anchored under config["drive_root"].
+    - On Windows/local execution, the default download location is
+      ~/Downloads/WeeklyDownloader so files remain on the laptop instead of
+      being written into the temporary GitHub checkout.
+    - An absolute path in config.json always wins.
+    - Other relative paths remain relative to the current working directory.
+    """
+    raw = config.get(key)
+
+    if raw is None:
+        if key == "download_folder":
+            if os.name == "nt" and not in_colab():
+                return Path.home() / "Downloads" / "WeeklyDownloader"
+        raw = default
+
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+
+    drive_root = config.get("drive_root")
+    if drive_root and in_colab():
+        return Path(drive_root) / p
+
+    # For the default local download location, keep it stable on the laptop.
+    if key == "download_folder" and raw == "./downloads" and os.name == "nt":
+        return Path.home() / "Downloads" / "WeeklyDownloader"
+
+    return p.resolve()
 
 
 # --------------------------------------------------------------------------- #
@@ -229,8 +298,20 @@ def process_source(session: requests.Session, source: dict, base_download_folder
         already_in_manifest = key in manifest[name]
         already_on_disk = dest_path.exists()
 
-        if already_in_manifest or already_on_disk:
-            logging.debug("[%s] Skipping already-downloaded file: %s", name, filename)
+        if already_in_manifest:
+            logging.info("[%s] SKIPPED - already recorded in manifest: %s", name, filename)
+            continue
+
+        if already_on_disk:
+            # A file with the same filename is already present on the laptop.
+            # Record it in the manifest so future runs skip it too.
+            logging.info("[%s] SKIPPED - file already exists: %s", name, filename)
+            manifest[name][key] = {
+                "url": url,
+                "filename": filename,
+                "downloaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "recovered_existing_file": True,
+            }
             continue
 
         new_count += 1
@@ -267,11 +348,20 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="List what would be downloaded, don't save anything")
     args = parser.parse_args()
 
-    config = load_config()
-    setup_logging(config.get("log_file", "./downloader.log"))
+    mount_drive_if_colab()
 
-    base_download_folder = Path(config.get("download_folder", "./downloads")).resolve()
-    manifest_path = Path(config.get("manifest_file", "./downloaded_manifest.json")).resolve()
+    config = load_config()
+
+    base_download_folder = resolve_drive_path(config, "download_folder", "./downloads")
+    manifest_path = resolve_drive_path(config, "manifest_file", "./downloaded_manifest.json")
+    log_path = resolve_drive_path(config, "log_file", "./downloader.log")
+
+    base_download_folder.mkdir(parents=True, exist_ok=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(str(log_path))
+
     timeout = config.get("request_timeout", 60)
 
     manifest = load_manifest(manifest_path)
