@@ -44,4 +44,4 @@ jobs:
 
       - name: Upload files to Google Drive
         run: |
-          rclone copy output/ gdrive:Colab\ Notebooks/ --verbose
+          rclone copy output/ MyDrive:Colab\ Notebooks/ --verbose
