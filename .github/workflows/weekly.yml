@@ -38,6 +38,10 @@ jobs:
           printf '%s' "$RCLONE_CONFIG_DATA" > ~/.config/rclone/rclone.conf
           chmod 600 ~/.config/rclone/rclone.conf
 
+      - name: Check rclone remote
+        run: |
+          rclone listremotes
+
       - name: Upload files to Google Drive
         run: |
-          rclone copy output/ gdrive:weekly-downloader/ --verbose
+          rclone copy output/ gdrive:Colab\ Notebooks/ --verbose
